@@ -61,12 +61,14 @@ WORKFLOW PENGEMBANGAN APLIKASI ZOOM POINTER (C++ & MinGW-w64)
 
 Jika tidak menggunakan tasks.json, jalankan perintah kompilasi langsung di terminal VS Code:
 
-> g++ main.cpp -o zoom_app.exe -lmagnification -luser32 -O2
+> g++ main.cpp -o zoom_app.exe -lmagnification -luser32 -lgdiplus -lgdi32 -O2
 
 Penjelasan flag penting:
 
 - -lmagnification : Melakukan linking ke magnification.dll bawaan Windows
 - -luser32 : Melakukan linking ke fungsi kursor, DPI, dan hotkey
+- -lgdiplus : Melakukan linking ke GDI+ untuk rendering pointer kursor antialiased
+- -lgdi32 : Melakukan linking ke GDI untuk bitmap per-pixel alpha layering
 - -O2 : Optimasi compiler untuk responsivitas kursor 60 FPS
 - -mwindows : (Opsional) Tambahkan flag ini nanti jika ingin menyembunyikan console window
 

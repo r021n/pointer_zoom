@@ -11,7 +11,7 @@ if errorlevel 1 (
 copy /Y zoom_app_res.o lib\default-manifest.o >nul
 
 echo [2/3] Kompilasi + linking main.cpp...
-g++ main.cpp zoom_app_res.o -o zoom_app.exe -Blib/ -Llib -lmagnification -luser32 -O2 -std=c++17 -Wall -Wextra -static-libgcc -static-libstdc++
+g++ main.cpp zoom_app_res.o -o zoom_app.exe -Blib/ -Llib -lmagnification -luser32 -lgdiplus -lgdi32 -O2 -std=c++17 -Wall -Wextra -static-libgcc -static-libstdc++
 if errorlevel 1 (
     echo [GAGAL] g++
     exit /b 1
