@@ -1,0 +1,15 @@
+# Build artifacts
+zoom_app.exe
+*.o
+*.obj
+*.exe
+
+# Runtime log
+run_log.txt
+
+# Editor / OS
+.vscode/*
+!.vscode/tasks.json
+*.swp
+Thumbs.db
+Desktop.ini

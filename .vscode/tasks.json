@@ -1,0 +1,31 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "Build Zoom App",
+            "command": "build.bat",
+            "args": [],
+            "windows": {
+                "options": {"shell": "cmd.exe"}
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "type": "shell",
+            "label": "Run Zoom App",
+            "command": "zoom_app.exe",
+            "windows": {
+                "options": {"shell": "cmd.exe"}
+            },
+            "dependsOn": "Build Zoom App",
+            "dependsOrder": "sequence",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}
