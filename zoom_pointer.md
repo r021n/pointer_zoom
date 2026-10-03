@@ -59,9 +59,12 @@ WORKFLOW PENGEMBANGAN APLIKASI ZOOM POINTER (C++ & MinGW-w64)
 
 ## [TAHAP 4: KOMPILASI & LINKING (VIA TERMINAL MANUAL)]
 
-Jika tidak menggunakan tasks.json, jalankan perintah kompilasi langsung di terminal VS Code:
+Jika tidak menggunakan tasks.json, jalankan perintah kompilasi langsung melalui build.bat atau terminal:
 
-> g++ main.cpp -o zoom_app.exe -lmagnification -luser32 -lgdiplus -lgdi32 -O2
+> .\build.bat
+
+Atau via command manual:
+> g++ main.cpp zoom_app_res.o -o zoom_app.exe -Blib/ -Llib -lmagnification -luser32 -lgdiplus -lgdi32 -lmfplat -lmfreadwrite -lmfuuid -lole32 -lcomdlg32 -O2 -std=c++17 -Wall -Wextra -static-libgcc -static-libstdc++
 
 Penjelasan flag penting:
 
@@ -69,8 +72,10 @@ Penjelasan flag penting:
 - -luser32 : Melakukan linking ke fungsi kursor, DPI, dan hotkey
 - -lgdiplus : Melakukan linking ke GDI+ untuk rendering pointer kursor antialiased
 - -lgdi32 : Melakukan linking ke GDI untuk bitmap per-pixel alpha layering
-- -O2 : Optimasi compiler untuk responsivitas kursor 60 FPS
-- -mwindows : (Opsional) Tambahkan flag ini nanti jika ingin menyembunyikan console window
+- -lmfplat -lmfreadwrite -lmfuuid : Windows Media Foundation Sink Writer untuk merekam video native H.264 MP4 hardware/software terakselerasi
+- -lole32 : Subsistem COM untuk inisialisasi Media Foundation
+- -lcomdlg32 : Dialog native Windows "Simpan Sebagai..." (GetSaveFileName)
+- -O2 : Optimasi compiler untuk responsivitas kursor 60 FPS dan capture video 30 FPS
 
 ## [TAHAP 5: RUNNING, TESTING & VERIFIKASI]
 
@@ -81,10 +86,12 @@ Penjelasan flag penting:
 2. Uji fungsi tombol:
    - Tekan Ctrl + Alt + Z -> Layar zoom 2x dan bergerak mulus mengikuti kursor
    - Tekan Ctrl + Alt + Z lagi -> Layar reset ke ukuran normal (1.0x)
+   - Tekan Ctrl + Alt + R -> Mulai merekam layar sesuai kondisi zoom (kursor & efek riak ikut terekam)
+   - Tekan Ctrl + Alt + R lagi -> Menghentikan rekaman & membuka modal dialog Windows untuk memilih lokasi penyimpanan video (.mp4)
    - Tekan Ctrl + Alt + Q -> Keluar aplikasi dan membersihkan memori
 
 3. Penanganan Izin (UAC):
    - Jika `MagSetFullscreenTransform` mengembalikan nilai FALSE / layar tidak membesar,
-     jalankan terminal/VS Code dengan mode "Run as Administrator" atau buatkan file
-     manifest `.exe` dengan hak akses UIAccess.
-     ================================================================================
+     jalankan terminal/VS Code dengan mode "Run as Administrator" atau gunakan file
+     manifest `.exe` dengan hak akses requireAdministrator yang sudah diset di build.bat.
+================================================================================
