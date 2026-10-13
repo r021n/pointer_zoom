@@ -70,7 +70,7 @@ Penjelasan flag penting:
 
 - -lmagnification : Melakukan linking ke magnification.dll bawaan Windows
 - -luser32 : Melakukan linking ke fungsi kursor, DPI, dan hotkey
-- -lgdiplus : Melakukan linking ke GDI+ untuk rendering pointer kursor antialiased
+- -lgdiplus : Melakukan linking ke GDI+ untuk rendering efek animasi pulse ripple antialiased
 - -lgdi32 : Melakukan linking ke GDI untuk bitmap per-pixel alpha layering
 - -lmfplat -lmfreadwrite -lmfuuid : Windows Media Foundation Sink Writer untuk merekam video native H.264 MP4 hardware/software terakselerasi
 - -lole32 : Subsistem COM untuk inisialisasi Media Foundation
@@ -83,15 +83,15 @@ Penjelasan flag penting:
 
    > .\zoom_app.exe
 
-2. Uji fungsi tombol:
-   - Tekan Ctrl + Alt + Z -> Layar zoom 2x dan bergerak mulus mengikuti kursor
+2. Uji fungsi tombol & animasi:
+   - Klik Kiri / Kanan / Tengah -> Animasi pulse ripple otomatis muncul mengembang di posisi kursor (Cyan untuk Kiri, Coral untuk Kanan, Emerald untuk Tengah)
+   - Animasi pulse dijamin berada di layer Z-Order paling depan (`HWND_TOPMOST` + Band `ZBID_SYSTEM_TOOLS`/`ZBID_IMMERSIVE_MOGO` probe) sehingga tidak tertutup oleh popup klik kanan desktop maupun layer Start Menu
+   - Tekan Ctrl + Alt + Z -> Layar zoom 1.75x dan bergerak mulus mengikuti kursor
    - Tekan Ctrl + Alt + Z lagi -> Layar reset ke ukuran normal (1.0x)
-   - Tekan Ctrl + Alt + R -> Mulai merekam layar sesuai kondisi zoom (kursor & efek riak ikut terekam)
+   - Tekan Ctrl + Alt + R -> Mulai merekam layar sesuai kondisi zoom (kursor & efek riak ikut terekam ke video)
    - Tekan Ctrl + Alt + R lagi -> Menghentikan rekaman & membuka modal dialog Windows untuk memilih lokasi penyimpanan video (.mp4)
    - Tekan Ctrl + Alt + Q -> Keluar aplikasi dan membersihkan memori
 
 3. Penanganan Izin (UAC):
-   - Jika `MagSetFullscreenTransform` mengembalikan nilai FALSE / layar tidak membesar,
-     jalankan terminal/VS Code dengan mode "Run as Administrator" atau gunakan file
-     manifest `.exe` dengan hak akses requireAdministrator yang sudah diset di build.bat.
+   - Binary `zoom_app.exe` menggunakan manifest `requireAdministrator` agar API Magnification dan Z-order layer berjalan optimal di Windows 10/11.
 ================================================================================

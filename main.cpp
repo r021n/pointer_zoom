@@ -52,10 +52,18 @@ namespace
     // Base pointer scale (diperbesar agar lebih jelas dan proporsional saat presentasi/zoom)
     constexpr float kBasePointerScale = 1.55f;
 
-    // Custom animated pointer overlay dimensions (96x96 untuk mengakomodasi pointer lebih besar + drop shadow + ripple)
-    constexpr int kOverlaySize = 96;
-    constexpr float kTipOffsetX = 28.0f;
-    constexpr float kTipOffsetY = 28.0f;
+    // Custom animated pointer overlay dimensions (160x160 untuk mengakomodasi pointer lebih besar + drop shadow + pulse ripple penuh)
+    constexpr int kOverlaySize = 160;
+    constexpr float kTipOffsetX = 60.0f;
+    constexpr float kTipOffsetY = 60.0f;
+
+    // Struktur efek animasi pulse ripple pada kursor saat klik mouse
+    struct ClickRipple
+    {
+        float timer = 0.0f;
+        float maxDuration = 0.35f;
+        int button = 0; // 0 = Left (Cyan), 1 = Right (Coral/Red), 2 = Middle (Emerald)
+    };
 
     // Dapatkan resolusi fisik asli monitor (misal 1920x1080), bebas dari kebohongan virtualisasi DPI (1536x864)
     void GetPhysicalScreenResolution(int &outW, int &outH)
@@ -83,7 +91,7 @@ namespace
         float normCursorX = 0.5f; // 0.0 s.d 1.0 (relatif terhadap viewport tampilan)
         float normCursorY = 0.5f; // 0.0 s.d 1.0
         float pointerScale = kBasePointerScale;
-        float waveProgress = -1.0f;
+        std::vector<ClickRipple> ripples;
         POINT cursor{0, 0};
     };
 
@@ -94,7 +102,7 @@ namespace
     // dalam 1 paket sinkron dari iterasi yang SAMA, bebas desinkronisasi.
     void PublishCamState(bool isZoomed, float zoomLevel, int camX, int camY, int regionW, int regionH,
                          float normX, float normY, float pointerScale,
-                         float waveProgress, const POINT &cursor)
+                         const std::vector<ClickRipple> &ripples, const POINT &cursor)
     {
         std::lock_guard<std::mutex> lock(g_camMutex);
         g_camState.isZoomed = isZoomed;
@@ -106,7 +114,7 @@ namespace
         g_camState.normCursorX = normX;
         g_camState.normCursorY = normY;
         g_camState.pointerScale = pointerScale;
-        g_camState.waveProgress = waveProgress;
+        g_camState.ripples = ripples;
         g_camState.cursor = cursor;
     }
 
@@ -247,13 +255,43 @@ namespace
             return false;
         }
 
-        g_overlayHwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            L"PointerZoomOverlayClass",
-            L"PointerOverlay",
-            WS_POPUP | WS_DISABLED,
-            0, 0, kOverlaySize, kOverlaySize,
-            nullptr, nullptr, hInstance, nullptr);
+        // Coba buat jendela di Z-Order Band tinggi jika diizinkan sistem (ZBID_SYSTEM_TOOLS=16, ZBID_IMMERSIVE_MOGO=6, ZBID_UIACCESS=2)
+        typedef HWND(WINAPI * pfnCreateWindowInBand)(
+            DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName,
+            DWORD dwStyle, int X, int Y, int nWidth, int nHeight,
+            HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, LPVOID lpParam,
+            DWORD dwBand);
+        static auto pCreateWindowInBand = LoadUser32Proc<pfnCreateWindowInBand>("CreateWindowInBand");
+
+        if (pCreateWindowInBand)
+        {
+            const DWORD candidateBands[] = {16, 6, 2};
+            for (DWORD band : candidateBands)
+            {
+                g_overlayHwnd = pCreateWindowInBand(
+                    WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                    L"PointerZoomOverlayClass",
+                    L"PointerOverlay",
+                    WS_POPUP | WS_DISABLED,
+                    0, 0, kOverlaySize, kOverlaySize,
+                    nullptr, nullptr, hInstance, nullptr, band);
+                if (g_overlayHwnd)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (!g_overlayHwnd)
+        {
+            g_overlayHwnd = CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                L"PointerZoomOverlayClass",
+                L"PointerOverlay",
+                WS_POPUP | WS_DISABLED,
+                0, 0, kOverlaySize, kOverlaySize,
+                nullptr, nullptr, hInstance, nullptr);
+        }
 
         if (!g_overlayHwnd)
             return false;
@@ -305,89 +343,116 @@ namespace
         }
     }
 
-    // Menggambar pointer kustom (dengan ripple click dan indikator REC jika aktif)
-    void DrawPointerShape(Gdiplus::Graphics &g, float tipX, float tipY, float scale, float waveProgress, bool isRecording)
+    // Menggambar efek animasi pulse gelombang riak klik
+    void DrawRippleEffect(Gdiplus::Graphics &g, float tipX, float tipY, const ClickRipple &ripple, float scale)
     {
-        // 1. Expanding click ripple at hotspot tip
-        if (waveProgress >= 0.0f && waveProgress <= 1.0f)
+        float t = ripple.timer / (std::max)(0.001f, ripple.maxDuration);
+        t = std::clamp(t, 0.0f, 1.0f);
+        // Transisi halus cubic ease-out
+        float ease = 1.0f - std::pow(1.0f - t, 3.0f);
+
+        // Skala radius pulse (maks ~44px pada scale normal)
+        float maxRadius = 44.0f * (scale > 1.2f ? 1.22f : 1.0f);
+        float radius = 5.0f + maxRadius * ease;
+
+        int alpha = static_cast<int>(230.0f * (1.0f - ease));
+        if (alpha <= 0)
+            return;
+
+        // Pewarnaan berdasarkan tombol mouse:
+        // - Klik Kiri: Cyan / Azure Blue (0, 180, 255)
+        // - Klik Kanan: Coral Crimson (255, 65, 85)
+        // - Klik Tengah: Neon Emerald (35, 220, 130)
+        BYTE r = 0, gVal = 180, b = 255;
+        if (ripple.button == 1)
         {
-            float radius = (3.0f + 14.0f * waveProgress) * (scale > 1.2f ? 1.4f : 1.0f);
-            int alpha = static_cast<int>(180.0f * (1.0f - waveProgress));
-            if (alpha > 0)
+            r = 255;
+            gVal = 65;
+            b = 85;
+        }
+        else if (ripple.button == 2)
+        {
+            r = 35;
+            gVal = 220;
+            b = 130;
+        }
+
+        // 1. Translucent glowing inner fill (pendaran halus di dalam lingkaran)
+        int glowAlpha = static_cast<int>(alpha * 0.18f);
+        if (glowAlpha > 0)
+        {
+            Gdiplus::SolidBrush glowBrush(Gdiplus::Color(glowAlpha, r, gVal, b));
+            g.FillEllipse(&glowBrush, tipX - radius, tipY - radius, radius * 2.0f, radius * 2.0f);
+        }
+
+        // 2. Primary crisp shockwave ring (cincin utama yang mengembang)
+        float penWidth = 3.6f * (1.0f - ease * 0.55f);
+        Gdiplus::Pen wavePen(Gdiplus::Color(alpha, r, gVal, b), penWidth);
+        g.DrawEllipse(&wavePen, tipX - radius, tipY - radius, radius * 2.0f, radius * 2.0f);
+
+        // 3. Secondary echo ripple wave (pantulan riak kedua untuk efek organik)
+        if (t > 0.12f)
+        {
+            float t2 = (t - 0.12f) / 0.88f;
+            float ease2 = 1.0f - std::pow(1.0f - t2, 3.0f);
+            float radius2 = 3.0f + (maxRadius * 0.65f) * ease2;
+            int alpha2 = static_cast<int>(140.0f * (1.0f - ease2));
+            if (alpha2 > 0)
             {
-                Gdiplus::Pen wavePen(Gdiplus::Color(alpha, 40, 160, 255), 2.2f * (1.0f - waveProgress * 0.5f));
-                g.DrawEllipse(&wavePen, tipX - radius, tipY - radius, radius * 2.0f, radius * 2.0f);
+                Gdiplus::Pen echoPen(Gdiplus::Color(alpha2, r, gVal, b), penWidth * 0.7f);
+                g.DrawEllipse(&echoPen, tipX - radius2, tipY - radius2, radius2 * 2.0f, radius2 * 2.0f);
             }
-        }
-
-        // 2. Base pointer coordinates relative to Tip (0, 0)
-        const Gdiplus::PointF basePoints[7] = {
-            {0.0f, 0.0f},   // Tip (Hotspot)
-            {0.0f, 21.0f},  // Left edge
-            {5.2f, 16.2f},  // Inner crook
-            {9.2f, 24.2f},  // Tail outer edge
-            {12.8f, 22.4f}, // Tail right edge
-            {8.8f, 14.5f},  // Outer crook
-            {15.0f, 14.5f}  // Right wing
-        };
-
-        Gdiplus::PointF arrowPts[7];
-        Gdiplus::PointF shadowPts[7];
-        const float shadowOffX = 1.5f * (std::max)(1.0f, scale * 0.7f);
-        const float shadowOffY = 2.0f * (std::max)(1.0f, scale * 0.7f);
-
-        for (int i = 0; i < 7; ++i)
-        {
-            float sx = basePoints[i].X * scale;
-            float sy = basePoints[i].Y * scale;
-            arrowPts[i] = Gdiplus::PointF(tipX + sx, tipY + sy);
-            shadowPts[i] = Gdiplus::PointF(tipX + sx + shadowOffX, tipY + sy + shadowOffY);
-        }
-
-        // Soft drop shadow
-        Gdiplus::SolidBrush shadowBrush(Gdiplus::Color(75, 0, 0, 0));
-        g.FillPolygon(&shadowBrush, shadowPts, 7);
-
-        // Crisp white pointer body
-        Gdiplus::SolidBrush whiteBrush(Gdiplus::Color(255, 255, 255, 255));
-        g.FillPolygon(&whiteBrush, arrowPts, 7);
-
-        // Dark charcoal outer border
-        Gdiplus::Pen outlinePen(Gdiplus::Color(255, 25, 25, 28), 1.8f * (std::max)(1.0f, scale * 0.7f));
-        outlinePen.SetLineJoin(Gdiplus::LineJoinRound);
-        g.DrawPolygon(&outlinePen, arrowPts, 7);
-
-        // Indikator recording aktif (titik merah berkedip halus di samping kursor)
-        if (isRecording)
-        {
-            double now = GetTimeSeconds();
-            // Pulsing alpha ~0.5 Hz
-            int pulseAlpha = 180 + static_cast<int>(70.0 * std::sin(now * 8.0));
-            pulseAlpha = std::clamp(pulseAlpha, 80, 255);
-            float dotRadius = 4.0f * (std::max)(1.0f, scale * 0.6f);
-            float dotX = tipX + 18.0f * scale;
-            float dotY = tipY + 2.0f * scale;
-
-            Gdiplus::SolidBrush recDotBrush(Gdiplus::Color(pulseAlpha, 235, 35, 35));
-            g.FillEllipse(&recDotBrush, dotX - dotRadius, dotY - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
-
-            Gdiplus::Pen recDotBorder(Gdiplus::Color(255, 255, 255, 255), 1.2f);
-            g.DrawEllipse(&recDotBorder, dotX - dotRadius, dotY - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
         }
     }
 
-    void RenderPointerOverlay(POINT cursorPt, float scale, float waveProgress)
+    // Indikator recording aktif (titik merah berkedip halus di samping kursor)
+    void DrawRecIndicator(Gdiplus::Graphics &g, float tipX, float tipY, float scale)
+    {
+        double now = GetTimeSeconds();
+        int pulseAlpha = 180 + static_cast<int>(70.0 * std::sin(now * 8.0));
+        pulseAlpha = std::clamp(pulseAlpha, 80, 255);
+        float dotRadius = 4.0f * (std::max)(1.0f, scale * 0.6f);
+        float dotX = tipX + 18.0f * scale;
+        float dotY = tipY + 2.0f * scale;
+
+        Gdiplus::SolidBrush recDotBrush(Gdiplus::Color(pulseAlpha, 235, 35, 35));
+        g.FillEllipse(&recDotBrush, dotX - dotRadius, dotY - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
+
+        Gdiplus::Pen recDotBorder(Gdiplus::Color(255, 255, 255, 255), 1.2f);
+        g.DrawEllipse(&recDotBorder, dotX - dotRadius, dotY - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
+    }
+
+    void RenderPointerOverlay(POINT cursorPt, float scale, const std::vector<ClickRipple> &ripples, bool isRecording)
     {
         if (!g_overlayHwnd || !g_hdcMem)
             return;
 
-        const bool isRec = g_recording.load(std::memory_order_relaxed);
+        // Jika tidak ada ripples dan tidak sedang merekam, sembunyikan window overlay
+        if (ripples.empty() && !isRecording)
+        {
+            if (IsWindowVisible(g_overlayHwnd))
+            {
+                ShowWindow(g_overlayHwnd, SW_HIDE);
+            }
+            return;
+        }
 
         {
             Gdiplus::Graphics g(g_hdcMem);
             g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
             g.Clear(Gdiplus::Color(0, 0, 0, 0));
-            DrawPointerShape(g, kTipOffsetX, kTipOffsetY, scale, waveProgress, isRec);
+
+            // 1. Gambar gelombang pulse ripple
+            for (const auto &rip : ripples)
+            {
+                DrawRippleEffect(g, kTipOffsetX, kTipOffsetY, rip, scale);
+            }
+
+            // 2. Indikator recording titik merah jika perekaman aktif
+            if (isRecording)
+            {
+                DrawRecIndicator(g, kTipOffsetX, kTipOffsetY, scale);
+            }
         }
 
         POINT ptSrc = {0, 0};
@@ -403,6 +468,10 @@ namespace
         HDC hdcScreen = GetDC(nullptr);
         UpdateLayeredWindow(g_overlayHwnd, hdcScreen, &ptDst, &size, g_hdcMem, &ptSrc, 0, &blend, ULW_ALPHA);
         ReleaseDC(nullptr, hdcScreen);
+
+        // Pertahankan Z-order tertinggi agar TIDAK PERNAH tertutup oleh menu klik kanan atau layer sistem
+        SetWindowPos(g_overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     void MagnifierThread()
@@ -430,15 +499,16 @@ namespace
         float currentProgress = 0.0f;
         float progressVelocity = 0.0f;
 
-        // Pointer animation state
+        // Pointer & click animation state
         float curScale = kBasePointerScale;
         float scaleVel = 0.0f;
         float clickPulseTimer = 0.0f;
-        float waveTimer = -1.0f;
-        bool lastPressed = false;
+        std::vector<ClickRipple> activeRipples;
+        bool lastLeft = false;
+        bool lastRight = false;
+        bool lastMiddle = false;
 
         double lastTime = GetTimeSeconds();
-        double lastTopmostTime = 0.0;
 
         while (g_running.load(std::memory_order_relaxed))
         {
@@ -462,6 +532,63 @@ namespace
                 GetCursorPos(&pt);
             }
 
+            // --- Fast Async Mouse Click Detection untuk Left, Right, & Middle Click ---
+            const bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            const bool rightDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+            const bool middleDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+            const bool isPressed = leftDown || rightDown || middleDown;
+
+            bool anyNewClick = false;
+            if (leftDown && !lastLeft)
+            {
+                activeRipples.push_back({0.0f, 0.35f, 0});
+                anyNewClick = true;
+            }
+            if (rightDown && !lastRight)
+            {
+                activeRipples.push_back({0.0f, 0.35f, 1});
+                anyNewClick = true;
+            }
+            if (middleDown && !lastMiddle)
+            {
+                activeRipples.push_back({0.0f, 0.35f, 2});
+                anyNewClick = true;
+            }
+            lastLeft = leftDown;
+            lastRight = rightDown;
+            lastMiddle = middleDown;
+
+            if (anyNewClick)
+            {
+                clickPulseTimer = 0.09f;
+                if (g_overlayHwnd)
+                {
+                    // Langsung bawa ke paling depan agar berada di atas context menu klik kanan & start menu
+                    SetWindowPos(g_overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+
+            // Batasi ripples maksimal 8 buah agar tidak makan memori saat klik sangat cepat
+            if (activeRipples.size() > 8)
+            {
+                activeRipples.erase(activeRipples.begin(), activeRipples.begin() + (activeRipples.size() - 8));
+            }
+
+            // Update timer semua ripples aktif
+            for (auto it = activeRipples.begin(); it != activeRipples.end();)
+            {
+                it->timer += dt;
+                if (it->timer >= it->maxDuration)
+                {
+                    it = activeRipples.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+
             const bool enabled = g_enabled.load(std::memory_order_relaxed);
             const float targetProgress = enabled ? 1.0f : 0.0f;
 
@@ -472,10 +599,6 @@ namespace
                 {
                     ApplyTransform(1.0f, 0, 0);
                     MagShowSystemCursor(TRUE);
-                    if (g_overlayHwnd)
-                    {
-                        ShowWindow(g_overlayHwnd, SW_HIDE);
-                    }
                     tracking = false;
                     velX = 0.0f;
                     velY = 0.0f;
@@ -483,8 +606,24 @@ namespace
                     curScale = kBasePointerScale;
                     scaleVel = 0.0f;
                     clickPulseTimer = 0.0f;
-                    waveTimer = -1.0f;
-                    lastPressed = false;
+                }
+
+                const bool isRec = g_recording.load(std::memory_order_relaxed);
+                // Jika ada animasi pulse yang aktif atau recording saat zoom OFF
+                if (!activeRipples.empty() || isRec)
+                {
+                    if (g_overlayHwnd && !IsWindowVisible(g_overlayHwnd))
+                    {
+                        ShowWindow(g_overlayHwnd, SW_SHOWNOACTIVATE);
+                    }
+                    RenderPointerOverlay(pt, 1.0f, activeRipples, isRec);
+                }
+                else
+                {
+                    if (g_overlayHwnd && IsWindowVisible(g_overlayHwnd))
+                    {
+                        ShowWindow(g_overlayHwnd, SW_HIDE);
+                    }
                 }
 
                 int screenW = 1920, screenH = 1080;
@@ -493,7 +632,7 @@ namespace
                 const float normY = (screenH > 0) ? (static_cast<float>(pt.y) / static_cast<float>(screenH)) : 0.0f;
 
                 // Update shared state for recorder even when zoom is OFF (1:1 normalized)
-                PublishCamState(false, 1.0f, 0, 0, screenW, screenH, normX, normY, kBasePointerScale, -1.0f, pt);
+                PublishCamState(false, 1.0f, 0, 0, screenW, screenH, normX, normY, kBasePointerScale, activeRipples, pt);
 
                 Sleep(kPollIntervalMs);
                 continue;
@@ -522,12 +661,6 @@ namespace
                 currentProgress = 0.0f;
                 progressVelocity = 0.0f;
                 tracking = true;
-
-                // MagShowSystemCursor(FALSE);
-                // if (g_overlayHwnd)
-                // {
-                //     ShowWindow(g_overlayHwnd, SW_SHOWNOACTIVATE);
-                // }
             }
             else
             {
@@ -577,19 +710,6 @@ namespace
 
             ApplyTransform(curZoom, camX, camY);
 
-            // --- Fast Async Mouse Click Detection ---
-            const bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-            const bool rightDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-            const bool middleDown = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-            const bool isPressed = leftDown || rightDown || middleDown;
-
-            if (isPressed && !lastPressed)
-            {
-                clickPulseTimer = 0.09f;
-                waveTimer = 0.0f;
-            }
-            lastPressed = isPressed;
-
             bool isDepressed = isPressed;
             if (clickPulseTimer > 0.0f)
             {
@@ -605,25 +725,21 @@ namespace
             scaleVel -= kSpringDamping * scaleVel * dt;
             curScale += scaleVel * dt;
 
-            float waveProgress = -1.0f;
-            if (waveTimer >= 0.0f)
+            const bool isRec = g_recording.load(std::memory_order_relaxed);
+            if (!activeRipples.empty() || isRec)
             {
-                waveTimer += dt;
-                waveProgress = waveTimer / 0.22f;
-                if (waveProgress > 1.0f)
+                if (g_overlayHwnd && !IsWindowVisible(g_overlayHwnd))
                 {
-                    waveTimer = -1.0f;
-                    waveProgress = -1.0f;
+                    ShowWindow(g_overlayHwnd, SW_SHOWNOACTIVATE);
                 }
+                RenderPointerOverlay(pt, curScale, activeRipples, isRec);
             }
-
-            RenderPointerOverlay(pt, curScale, waveProgress);
-
-            if (g_overlayHwnd && (now - lastTopmostTime) > 0.2)
+            else
             {
-                SetWindowPos(g_overlayHwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                lastTopmostTime = now;
+                if (g_overlayHwnd && IsWindowVisible(g_overlayHwnd))
+                {
+                    ShowWindow(g_overlayHwnd, SW_HIDE);
+                }
             }
 
             const int regionWInt = static_cast<int>(std::lround(curRegionW));
@@ -641,7 +757,7 @@ namespace
 
             // Update shared state for recorder (atomik: kursor ternormalisasi + camera + efek dalam 1 snapshot)
             PublishCamState(currentProgress > 0.0005f, curZoom, clampedCamX, clampedCamY, regionWInt, regionHInt,
-                            normX, normY, curScale, waveProgress, pt);
+                            normX, normY, curScale, activeRipples, pt);
 
             Sleep(kPollIntervalMs);
         }
@@ -881,9 +997,34 @@ namespace
                     renderScale = snap.pointerScale * scaleX;
                 }
 
-                Gdiplus::Graphics g(hdcFrame);
-                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-                DrawPointerShape(g, renderCursorX, renderCursorY, renderScale, snap.waveProgress, true);
+                // Gambar kursor Windows asli pada layar ter-zoom
+                CURSORINFO ci{};
+                ci.cbSize = sizeof(CURSORINFO);
+                if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING))
+                {
+                    ICONINFO ii = {};
+                    if (GetIconInfo(ci.hCursor, &ii))
+                    {
+                        int targetX = static_cast<int>(renderCursorX) - static_cast<int>(ii.xHotspot);
+                        int targetY = static_cast<int>(renderCursorY) - static_cast<int>(ii.yHotspot);
+                        DrawIconEx(hdcFrame, targetX, targetY, ci.hCursor, 0, 0, 0, nullptr, DI_NORMAL | DI_DEFAULTSIZE);
+                        if (ii.hbmColor)
+                            DeleteObject(ii.hbmColor);
+                        if (ii.hbmMask)
+                            DeleteObject(ii.hbmMask);
+                    }
+                }
+
+                // Gambar animasi pulse ripple saat zoom ON
+                if (!snap.ripples.empty())
+                {
+                    Gdiplus::Graphics g(hdcFrame);
+                    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                    for (const auto &rip : snap.ripples)
+                    {
+                        DrawRippleEffect(g, renderCursorX, renderCursorY, rip, renderScale);
+                    }
+                }
             }
             else
             {
@@ -899,36 +1040,33 @@ namespace
                     GetCursorPos(&ptCursor);
                 }
 
-                // Gambar kursor Windows aktif
+                // Gambar kursor Windows asli aktif
                 CURSORINFO ci{};
                 ci.cbSize = sizeof(CURSORINFO);
-                bool drewCursor = false;
                 if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING))
                 {
                     ICONINFO ii = {};
                     if (GetIconInfo(ci.hCursor, &ii))
                     {
-                        // Gunakan koordinat ci.ptScreenPos yang sinkron dengan handle kursor
                         int targetX = ci.ptScreenPos.x - static_cast<int>(ii.xHotspot);
                         int targetY = ci.ptScreenPos.y - static_cast<int>(ii.yHotspot);
-
-                        // Gambar dengan ukuran default sistem DPI-scaled (0, 0 + DI_NORMAL | DI_DEFAULTSIZE)
-                        // agar ukuran dan letak hotspot cocok persis dengan yang digambar oleh DWM Windows
                         DrawIconEx(hdcFrame, targetX, targetY, ci.hCursor, 0, 0, 0, nullptr, DI_NORMAL | DI_DEFAULTSIZE);
-
                         if (ii.hbmColor)
                             DeleteObject(ii.hbmColor);
                         if (ii.hbmMask)
                             DeleteObject(ii.hbmMask);
-                        drewCursor = true;
                     }
                 }
-                if (!drewCursor)
+
+                // Gambar efek pulse ripple saat zoom OFF jika ada yang aktif
+                if (!snap.ripples.empty())
                 {
                     Gdiplus::Graphics g(hdcFrame);
                     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-                    DrawPointerShape(g, static_cast<float>(ptCursor.x), static_cast<float>(ptCursor.y),
-                                     snap.pointerScale, snap.waveProgress, true);
+                    for (const auto &rip : snap.ripples)
+                    {
+                        DrawRippleEffect(g, static_cast<float>(ptCursor.x), static_cast<float>(ptCursor.y), rip, 1.0f);
+                    }
                 }
             }
 
@@ -1024,11 +1162,13 @@ namespace
     void PrintBanner()
     {
         std::printf("========================================================\n");
-        std::printf("  Zoom Pointer & Screen Recorder (Hardware-Accelerated)\n");
+        std::printf("  Zoom Pointer, Pulse Animator & Screen Recorder\n");
         std::printf("========================================================\n");
+        std::printf("  Mouse Click: Animasi pulse ripple otomatis (Left: Cyan, Right: Coral, Middle: Emerald)\n");
+        std::printf("               * Layer Z-Order tertinggi, tidak tertutup menu desktop/layer sistem\n");
         std::printf("  Ctrl+Alt+Z : Toggle zoom %.1fx (transisi animasi halus & camera follow)\n",
                     kZoomLevel);
-        std::printf("  Ctrl+Alt+R : Mulai / Stop rekaman layar (sesuai kondisi zoom)\n");
+        std::printf("  Ctrl+Alt+R : Mulai / Stop rekaman layar (sesuai kondisi zoom & riak)\n");
         std::printf("  Ctrl+Alt+Q : Keluar & bersihkan memori\n");
         std::printf("--------------------------------------------------------\n");
         std::printf("Status: berjalan di background...\n");
